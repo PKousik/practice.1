@@ -1,0 +1,238 @@
+class HUDApplicantUtils {
+    constructor() {
+
+    }
+
+    /** 
+     * Description: Importing Dependencies required.
+    */
+    // logUtils = new HUDLogUtils('HUDApplicantUtils')
+    commonUtils = new HUDCommonUtils();
+    // commonHTTPResponse = new HUDCommonHTTPResponse()
+    // validationUtils = new HUDValidationUtils()
+    cacheUtils = new HUDCacheUtils()
+
+    /**
+     * @typedef ApplicantResponse
+     * @type {object} 
+     * @property {boolean} success - true or false
+     * @property {object | null} data - Applicant Data Object| null
+     * @property {Array} messages - Array of Objects Containing type & message
+    */
+
+    /** 
+     * Description  : Fetch Applicant details
+     * Reference    : Custom API : /api/hud/applicant/fetch
+     * Author       : Harvir Rathee
+     * Verion       : 1
+     * @async
+     * @param {HTTPRequest Object} - HTTP Request containing HTTP Request Body
+     * @returns {ApplicantResponse}
+    */
+    async fetchApplicantDetails(applicant_id) {
+        let response = {
+            success: true,
+            data: {},
+            messages: [{ type: "message", message: 'Success' }]
+        }
+        try {
+            let data = null
+            let dbQ = await DBQuery.connect('gm-applicant')
+            if (applicant_id) {
+                dbQ.where('id').isEqual(applicant_id);
+            } else {
+                dbQ.where('ondemand_user').isEqual(User.id)
+            }
+            await dbQ.execute();
+            let validate_acl = true;
+            await dbQ.streamRows(async dataRow => {
+                if (await dbQ.canRead()) {
+                    if (dataRow) {
+                        data = {
+                            first_name: dataRow.first_name,
+                            middle_name: dataRow.middle_name,
+                            last_name: dataRow.last_name,
+                            full_name: dataRow.first_name + " " + dataRow.middle_name + " " + dataRow.last_name,
+                            email: dataRow.email,
+                            business_number: dataRow.business_number,
+                            business_number_extension: dataRow.business_number_extension,
+                            mobile_number: dataRow.mobile_number,
+                            home_number: dataRow.home_number,
+                            id: dataRow.id
+                        }
+                    }
+                } else {
+                    validate_acl = false;
+                }
+            })
+            response.data = data;
+            if (JSON.stringify(response.data) == null) {
+                response.messages = [{ type: 'info', message: 'Profile Doesnot Exists' }]
+            }
+
+            if (!validate_acl) {
+                return {
+                    success: false,
+                    messages: [{ type: "error", message: "Permission Denied" }]
+                };
+            }
+        } catch (error) {
+            response.messages = [{ type: "error", message: error?.message }]
+            response.success = false;
+        }
+        return response;
+    }
+
+    async validateMobileNumber(data) {
+        return /^\d{10}$/.test(data);
+    }
+
+    /** 
+     * Description  : API to upsert Applicant Details
+     * Reference    : Custom API : /api/hud/applicant/upsert
+     * Author       : Harvir Rathee
+     * Verion       : 1
+     * @async
+     * @param {HTTPRequest Object} - requestBody - HTTP Request containing HTTP Request Body
+     * @returns {ApplicantResponse}
+    */
+    async upsertApplicantDetails(requestBody) {
+        let response = {
+            success: true,
+            data: {},
+            messages: [{ type: "message", message: 'Success' }]
+        }
+        try {
+            let applicantResponse = null
+            let {
+                first_name, middle_name, last_name, email, mobile_number, home_number,
+                business_number, business_number_extension, id
+            } = requestBody
+            if (!(first_name && last_name && email && mobile_number)) {
+                response.success = false
+                response.messages = [{ type: "message", message: 'Bad request' }]
+                return response
+            }
+            if (mobile_number) {
+                const vaidationCheck = await this.validateMobileNumber(mobile_number)
+                if (!vaidationCheck) {
+                    return {
+                    success: false,
+                    messages: [{ type: "error", message: "Bad Request" }]
+                };;
+                }
+            }
+            let validate_acl = true;
+            let dbQ = await DBQuery.connect('gm-applicant')
+            if (id) {
+                dbQ.where('id').isEqual(id)
+                dbQ.setLimit(1)
+                dbQ.execute()
+                await dbQ.streamRows(async dataRow => {
+                    if (await dbQ.canWrite()) {
+                        dbQ.setValue()
+                        dbQ.setValue('first_name', first_name)
+                        dbQ.setValue('middle_name', middle_name)
+                        dbQ.setValue('last_name', last_name)
+                        dbQ.setValue('email', email)
+                        dbQ.setValue('business_number', business_number)
+                        dbQ.setValue('business_number_extension', business_number_extension)
+                        dbQ.setValue('mobile_number', mobile_number)
+                        dbQ.setValue('home_number', home_number)
+                        applicantResponse = await dbQ.update()
+                    } else {
+                        validate_acl = false;
+                    }
+                })
+                if (!validate_acl) {
+                    return {
+                    success: false,
+                    messages: [{ type: "error", message: "Permission Denied" }]
+                };
+                }
+            }
+            else {
+                if (await dbQ.canCreate()) {
+                    dbQ.createNew()
+                    dbQ.setValue('first_name', first_name)
+                    dbQ.setValue('middle_name', middle_name)
+                    dbQ.setValue('last_name', last_name)
+                    dbQ.setValue('email', email)
+                    dbQ.setValue('business_number', business_number)
+                    dbQ.setValue('business_number_extension', business_number_extension)
+                    dbQ.setValue('mobile_number', mobile_number)
+                    dbQ.setValue('home_number', home_number)
+                    dbQ.setValue('ondemand_user', User.id)
+                    applicantResponse = await dbQ.saveNew()
+                } else {
+                    return {
+                    success: false,
+                    messages: [{ type: "error", message: "Permission Denied" }]
+                };
+                }
+            }
+            if (applicantResponse?.success) {
+                let keys = ["app_createdBy", "app_lastModifiedBy", "app_lastModifiedDate", "app_createdDate", "app_tenant", "odp_sh_table"];
+                await this.commonUtils.removeKeys(applicantResponse.record, keys);
+                response.data = applicantResponse.record;
+            } else {
+                response.success = false;
+                response.data = {};
+                response.messages = id ? [{ type: 'error', message: 'Applicant Profile not exists' }] : [{ type: 'error', message: 'Profile Aldredy Exists' }]
+            }
+        } catch (error) {
+            response.messages = [{ type: "error", message: error?.message }]
+            response.success = false;
+        }
+        return response;
+    }
+
+    /** 
+     * Description  : API to fetch Applicant Document Center Details
+     * Reference    : Custom API : /api/hud/applicant/fetchAllDocuments
+     * Author       : Jeevan JC
+     * Verion       : 1
+     * @async
+     * @param {HTTPRequest Object} - requestBody - HTTP Request containing HTTP Request Body
+     * @returns {Document List}
+    */
+    async fetchApplicantDocuments(requestBody) {
+        let response = {
+            success: true,
+            data: {},
+            messages: [{ type: "message", message: 'Success' }]
+        }
+        try {
+            let { application_id } = requestBody;
+            
+            /** Required Fields Check */
+            if (!(application_id)) {
+                return {
+                    success: false,
+                    messages: [{ type: "error", message: "Manadatory Fields Missing" }]
+                };
+            }
+            
+            let applicationCheck = await this.cacheUtils.fetchApplicationData(application_id);
+            if (!(applicationCheck)) {
+                response.success = false;
+                response.messages = [{ type: "error", message: 'Application oe nto exist' }]
+                return response;
+            }
+            if (User.roles.includes('gm_applicant')) {
+                let document_list = await new HUDFileApiUtils().fetchDocumentCenterData(requestBody, false);
+                response.data = document_list?.data;
+                response.pagination = document_list?.pagination;
+            } else {
+                return {
+                    success: false,
+                    messages: [{ type: "error", message: "Permission Denied" }]
+                }
+            }
+        } catch (error) {
+            response.messages = [{ type: "error", message: error?.message }]
+            response.success = false;
+        }
+        return response;
+    }
+}
